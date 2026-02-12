@@ -47,14 +47,26 @@ python extract_links.py screenshot.png
 python extract_links.py slide1.png slide2.png slide3.png
 ```
 
-### Output
+### End-to-end example
+
+A sample image is included in [`examples/sample.png`](examples/sample.png):
+
+![sample](examples/sample.png)
+
+```bash
+python extract_links.py examples/sample.png
+```
 
 ```
-=== screenshot.png ===
-Found 1 link(s):
+=== examples/sample.png ===
+Found 3 link(s):
 
-  1. https://gist.github.com/oshoval/9611a0aeba2f424949c54d975f9fe78c
+  1. https://example.com/docs/getting-started
+  2. https://api.example.com/v2/status
+  3. https://github.com/example-org/example-project/tree/main
 ```
+
+Note that the third URL wraps across two lines in the image and is correctly rejoined.
 
 ## How It Works
 
