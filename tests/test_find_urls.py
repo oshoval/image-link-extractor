@@ -15,7 +15,7 @@
 #
 """Tests for the find_urls integration (rejoin + extract + fix)."""
 
-from extract_links import find_urls
+from extract_links import ExtractionResult, find_urls
 
 
 class TestFindURLs:
@@ -66,3 +66,24 @@ class TestFindURLs:
         result = find_urls(text)
         assert len(result) == 1
         assert result[0] == "https://gist.github.com/user/9611a0aeba2f424949c54d975f9fe78c"
+
+
+class TestExtractionResult:
+    """Test the ExtractionResult dataclass."""
+
+    def test_successful_result(self):
+        result = ExtractionResult(file="test.png", urls=["https://example.com"], text="some text")
+        assert result.ok is True
+        assert result.urls == ["https://example.com"]
+
+    def test_error_result(self):
+        result = ExtractionResult(file="missing.png", error="File not found")
+        assert result.ok is False
+        assert result.urls == []
+
+    def test_defaults(self):
+        result = ExtractionResult(file="test.png")
+        assert result.ok is True
+        assert result.urls == []
+        assert result.text == ""
+        assert result.error == ""

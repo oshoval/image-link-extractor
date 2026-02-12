@@ -26,46 +26,106 @@ Usage:
     python3 extract_links.py slide1.png slide2.png
 """
 
+from __future__ import annotations
+
 import re
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytesseract
 from PIL import Image
 
-# Regex to match URLs — covers http(s), ftp, and common bare domains
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 URL_PATTERN = re.compile(
     r"(?:https?://|ftp://|www\.)"  # scheme or www.
     r"[^\s<>\"\'\)\]\},;!]*"  # URL body (greedy, stops at whitespace/delimiters)
     r"[^\s<>\"\'\)\]\},;!.\:]"  # don't end on trailing punctuation
 )
 
+SUPPORTED_FORMATS = frozenset((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"))
 
-def preprocess_image(image_path: str) -> Image.Image:
+BULLET_PREFIXES = ("*", "-", "•", "●", "+")
+
+# Characters that are valid inside a URL (RFC 3986 + common extras)
+URL_CHARS = frozenset("/-_.~:?#[]@!$&'()*+,;=%")
+
+# OCR character misreads commonly seen in hex-heavy strings
+OCR_HEX_FIXES: dict[str, str] = {
+    "O": "0",
+    "Q": "0",
+    "l": "1",
+    "I": "1",
+    "S": "5",
+    "G": "6",
+}
+
+# Image preprocessing thresholds
+MIN_WIDTH_FOR_UPSCALE = 1000
+UPSCALE_FACTOR = 2
+
+# URL continuation heuristic thresholds
+URL_CHAR_RATIO_THRESHOLD = 0.85
+MIN_CONTINUATION_LENGTH = 5
+
+# Hex segment detection thresholds
+MIN_HEX_SEGMENT_LENGTH = 8
+HEX_CHAR_RATIO_THRESHOLD = 0.7
+
+HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+
+
+# ---------------------------------------------------------------------------
+# Result type
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExtractionResult:
+    """Result of processing a single image."""
+
+    file: str
+    urls: list[str] = field(default_factory=list)
+    text: str = ""
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
+
+
+# ---------------------------------------------------------------------------
+# Image preprocessing
+# ---------------------------------------------------------------------------
+
+
+def preprocess_image(image_path: Path) -> Image.Image:
     """Load and preprocess image for better OCR accuracy."""
     img = Image.open(image_path)
-
-    # Convert to grayscale for better OCR
     img = img.convert("L")
 
-    # Scale up small images (Tesseract works better on larger text)
     width, height = img.size
-    if width < 1000:
-        scale = 2
-        img = img.resize((width * scale, height * scale), Image.LANCZOS)
+    if width < MIN_WIDTH_FOR_UPSCALE:
+        img = img.resize(
+            (width * UPSCALE_FACTOR, height * UPSCALE_FACTOR),
+            Image.LANCZOS,
+        )
 
     return img
 
 
-def extract_text(image_path: str) -> str:
+def extract_text(image_path: Path) -> str:
     """Extract text from image using Tesseract OCR."""
     img = preprocess_image(image_path)
+    return pytesseract.image_to_string(img, config="--oem 3 --psm 6")
 
-    # Use PSM 6 (assume uniform block of text) for slide-like images
-    custom_config = r"--oem 3 --psm 6"
-    text = pytesseract.image_to_string(img, config=custom_config)
 
-    return text
+# ---------------------------------------------------------------------------
+# URL extraction pipeline
+# ---------------------------------------------------------------------------
 
 
 def rejoin_wrapped_urls(text: str) -> str:
@@ -79,19 +139,11 @@ def rejoin_wrapped_urls(text: str) -> str:
     back to the URL on the previous line.
     """
     lines = text.split("\n")
-    merged = []
+    merged: list[str] = []
 
     for line in lines:
         stripped = line.strip()
-
-        # Check if previous line ends with a URL and this line looks like a continuation
-        if (
-            merged
-            and URL_PATTERN.search(merged[-1])
-            and stripped
-            and not stripped.startswith(("*", "-", "•", "●", "+"))
-            and _looks_like_url_continuation(stripped)
-        ):
+        if _should_join_to_previous(merged, stripped):
             merged[-1] = merged[-1].rstrip() + stripped
         else:
             merged.append(line)
@@ -99,93 +151,117 @@ def rejoin_wrapped_urls(text: str) -> str:
     return "\n".join(merged)
 
 
+def _should_join_to_previous(merged_lines: list[str], stripped_line: str) -> bool:
+    """Determine if a line should be joined to the previous URL line."""
+    return bool(
+        merged_lines
+        and URL_PATTERN.search(merged_lines[-1])
+        and stripped_line
+        and not stripped_line.startswith(BULLET_PREFIXES)
+        and _looks_like_url_continuation(stripped_line)
+    )
+
+
 def _looks_like_url_continuation(line: str) -> bool:
     """Heuristic: does this line look like the tail of a wrapped URL?
 
-    Matches lines that are mostly hex chars, path-like segments,
-    or query strings — common URL tails.
+    Matches lines that are mostly URL-valid characters, without spaces,
+    and at least MIN_CONTINUATION_LENGTH chars long.
     """
-    # Remove common OCR artifacts (Q->0, O->0, l->1, etc.)
     cleaned = line.strip().rstrip(".,;:!? ")
     if not cleaned:
         return False
 
-    # URL continuations don't contain spaces
     if " " in cleaned:
         return False
 
-    # URL continuation: hex-heavy string, path segments, query params
-    # e.g. "0aeba2f424949c54d975f9fe78c" or "index.html?q=foo"
-    alnum_count = sum(1 for c in cleaned if c.isalnum() or c in "/-_.~:?#[]@!$&'()*+,;=%")
-    return alnum_count / len(cleaned) >= 0.85 and len(cleaned) >= 5
+    url_char_count = sum(1 for c in cleaned if c.isalnum() or c in URL_CHARS)
+    return (
+        url_char_count / len(cleaned) >= URL_CHAR_RATIO_THRESHOLD
+        and len(cleaned) >= MIN_CONTINUATION_LENGTH
+    )
+
+
+def _fix_hex_segment(segment: str) -> str:
+    """Fix common OCR misreads in a single path segment that looks like a hex hash."""
+    if len(segment) < MIN_HEX_SEGMENT_LENGTH:
+        return segment
+
+    hex_count = sum(1 for c in segment if c in HEX_CHARS)
+    if hex_count / len(segment) >= HEX_CHAR_RATIO_THRESHOLD:
+        return "".join(OCR_HEX_FIXES.get(c, c) for c in segment)
+    return segment
 
 
 def _fix_ocr_artifacts(url: str) -> str:
-    """Fix common OCR character misreads in URLs.
+    """Fix common OCR character misreads in URL path segments.
 
-    Tesseract commonly confuses:
-      O <-> 0, Q -> 0, l -> 1, I -> 1, S -> 5, etc.
-
-    We only apply corrections in path segments that look like hex strings
+    Only applies corrections to segments that look like hex strings
     (e.g. git commit hashes, gist IDs) to avoid breaking real words.
     """
-    # Split URL into parts: scheme+host vs path
     match = re.match(r"(https?://[^/]+)(.*)", url)
     if not match:
         return url
 
-    host_part = match.group(1)
-    path_part = match.group(2)
+    host = match.group(1)
+    path = match.group(2)
 
-    # For each path segment, if it looks hex-ish, fix common OCR errors
-    def fix_hex_segment(segment: str) -> str:
-        # Count how many chars are valid hex
-        hex_chars = sum(1 for c in segment if c in "0123456789abcdefABCDEF")
-        if len(segment) >= 8 and hex_chars / max(len(segment), 1) >= 0.7:
-            # This segment is likely a hex hash — fix OCR errors
-            fixes = {"O": "0", "Q": "0", "l": "1", "I": "1", "S": "5", "G": "6"}
-            return "".join(fixes.get(c, c) for c in segment)
-        return segment
+    fixed_segments = [_fix_hex_segment(s) for s in path.split("/")]
+    return host + "/".join(fixed_segments)
 
-    # Apply to path segments (split by /)
-    segments = path_part.split("/")
-    fixed_segments = [fix_hex_segment(s) for s in segments]
-    return host_part + "/".join(fixed_segments)
+
+def _deduplicate(items: list[str]) -> list[str]:
+    """Remove duplicates while preserving order."""
+    return list(dict.fromkeys(items))
 
 
 def find_urls(text: str) -> list[str]:
     """Find all URLs in extracted text, handling line-wrapped URLs."""
-    # First rejoin URLs that span multiple lines
     text = rejoin_wrapped_urls(text)
-
     urls = URL_PATTERN.findall(text)
-
-    # Fix common OCR misreads in URL path segments
     urls = [_fix_ocr_artifacts(u) for u in urls]
-
-    # Deduplicate while preserving order
-    seen = set()
-    unique = []
-    for url in urls:
-        if url not in seen:
-            seen.add(url)
-            unique.append(url)
-
-    return unique
+    return _deduplicate(urls)
 
 
-def process_image(image_path: str) -> dict:
+# ---------------------------------------------------------------------------
+# Image processing
+# ---------------------------------------------------------------------------
+
+
+def process_image(image_path: str) -> ExtractionResult:
     """Process a single image: extract text and find URLs."""
     path = Path(image_path)
+
     if not path.exists():
-        return {"file": image_path, "error": f"File not found: {image_path}"}
-    if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"):
-        return {"file": image_path, "error": f"Unsupported format: {path.suffix}"}
+        return ExtractionResult(file=image_path, error=f"File not found: {image_path}")
 
-    text = extract_text(image_path)
+    if path.suffix.lower() not in SUPPORTED_FORMATS:
+        return ExtractionResult(file=image_path, error=f"Unsupported format: {path.suffix}")
+
+    text = extract_text(path)
     urls = find_urls(text)
+    return ExtractionResult(file=image_path, urls=urls, text=text)
 
-    return {"file": image_path, "text": text, "urls": urls}
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _format_result(result: ExtractionResult) -> str:
+    """Format a single extraction result for terminal output."""
+    if not result.ok:
+        return f"ERROR: {result.error}"
+
+    lines = [f"=== {result.file} ==="]
+    if result.urls:
+        lines.append(f"Found {len(result.urls)} link(s):\n")
+        for i, url in enumerate(result.urls, 1):
+            lines.append(f"  {i}. {url}")
+    else:
+        lines.append("  No links found.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def main():
@@ -193,25 +269,12 @@ def main():
         print(__doc__.strip())
         sys.exit(1)
 
-    image_paths = sys.argv[1:]
-
-    for image_path in image_paths:
+    for image_path in sys.argv[1:]:
         result = process_image(image_path)
-
-        if "error" in result:
-            print(f"ERROR: {result['error']}", file=sys.stderr)
-            continue
-
-        print(f"=== {result['file']} ===")
-        urls = result["urls"]
-        if urls:
-            print(f"Found {len(urls)} link(s):\n")
-            for i, url in enumerate(urls, 1):
-                print(f"  {i}. {url}")
+        if not result.ok:
+            print(_format_result(result), file=sys.stderr)
         else:
-            print("  No links found.")
-
-        print()
+            print(_format_result(result))
 
 
 if __name__ == "__main__":
