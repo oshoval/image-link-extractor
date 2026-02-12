@@ -65,6 +65,18 @@ jobs:
           echo "$output" | grep -q "File not found"
           echo "Missing file error handled correctly."
 
+  dco:
+    name: DCO (Signed-off-by)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO sign-off
+        uses: tim-actions/dco@master
+
   license-header:
     name: License Header Check
     runs-on: ubuntu-latest
