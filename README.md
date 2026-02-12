@@ -83,6 +83,10 @@ Note that the third URL wraps across two lines in the image and is correctly rej
 - Works best on clean, high-contrast images (slides, screenshots); low-contrast or dark backgrounds may reduce accuracy
 - PSM 6 (uniform text block) is used by default — complex multi-column layouts may need tuning
 
+## Disclaimer
+
+This code was generated with AI and has not been manually reviewed. Use at your own risk.
+
 ## License
 
 Copyright 2026 Red Hat, Inc.
