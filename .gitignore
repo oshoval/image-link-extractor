@@ -25,5 +25,9 @@ env/
 .DS_Store
 Thumbs.db
 
+# Linter / formatter cache
+.ruff_cache/
+
 # Test artifacts
 *.log
+.pytest_cache/
