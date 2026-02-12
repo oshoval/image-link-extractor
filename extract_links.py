@@ -36,9 +36,9 @@ from PIL import Image
 
 # Regex to match URLs — covers http(s), ftp, and common bare domains
 URL_PATTERN = re.compile(
-    r'(?:https?://|ftp://|www\.)'  # scheme or www.
-    r'[^\s<>\"\'\)\]\},;!]*'       # URL body (greedy, stops at whitespace/delimiters)
-    r'[^\s<>\"\'\)\]\},;!.\:]'     # don't end on trailing punctuation
+    r"(?:https?://|ftp://|www\.)"  # scheme or www.
+    r"[^\s<>\"\'\)\]\},;!]*"  # URL body (greedy, stops at whitespace/delimiters)
+    r"[^\s<>\"\'\)\]\},;!.\:]"  # don't end on trailing punctuation
 )
 
 
@@ -113,7 +113,9 @@ def _looks_like_url_continuation(line: str) -> bool:
 
     # URL continuation: hex-heavy string, path segments, query params
     # e.g. "0aeba2f424949c54d975f9fe78c" or "index.html?q=foo"
-    alnum_count = sum(1 for c in cleaned if c.isalnum() or c in "/-_.~:?#[]@!$&'()*+,;=%")
+    alnum_count = sum(
+        1 for c in cleaned if c.isalnum() or c in "/-_.~:?#[]@!$&'()*+,;=%"
+    )
     return alnum_count / len(cleaned) >= 0.85 and len(cleaned) >= 5
 
 
@@ -127,7 +129,7 @@ def _fix_ocr_artifacts(url: str) -> str:
     (e.g. git commit hashes, gist IDs) to avoid breaking real words.
     """
     # Split URL into parts: scheme+host vs path
-    match = re.match(r'(https?://[^/]+)(.*)', url)
+    match = re.match(r"(https?://[^/]+)(.*)", url)
     if not match:
         return url
 
@@ -176,7 +178,15 @@ def process_image(image_path: str) -> dict:
     path = Path(image_path)
     if not path.exists():
         return {"file": image_path, "error": f"File not found: {image_path}"}
-    if not path.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"):
+    if path.suffix.lower() not in (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".webp",
+    ):
         return {"file": image_path, "error": f"Unsupported format: {path.suffix}"}
 
     text = extract_text(image_path)
