@@ -33,7 +33,6 @@ from pathlib import Path
 import pytesseract
 from PIL import Image
 
-
 # Regex to match URLs — covers http(s), ftp, and common bare domains
 URL_PATTERN = re.compile(
     r"(?:https?://|ftp://|www\.)"  # scheme or www.
@@ -90,7 +89,7 @@ def rejoin_wrapped_urls(text: str) -> str:
             merged
             and URL_PATTERN.search(merged[-1])
             and stripped
-            and not stripped.startswith(("*", "-", "•", "●"))
+            and not stripped.startswith(("*", "-", "•", "●", "+"))
             and _looks_like_url_continuation(stripped)
         ):
             merged[-1] = merged[-1].rstrip() + stripped
@@ -111,11 +110,13 @@ def _looks_like_url_continuation(line: str) -> bool:
     if not cleaned:
         return False
 
+    # URL continuations don't contain spaces
+    if " " in cleaned:
+        return False
+
     # URL continuation: hex-heavy string, path segments, query params
     # e.g. "0aeba2f424949c54d975f9fe78c" or "index.html?q=foo"
-    alnum_count = sum(
-        1 for c in cleaned if c.isalnum() or c in "/-_.~:?#[]@!$&'()*+,;=%"
-    )
+    alnum_count = sum(1 for c in cleaned if c.isalnum() or c in "/-_.~:?#[]@!$&'()*+,;=%")
     return alnum_count / len(cleaned) >= 0.85 and len(cleaned) >= 5
 
 
@@ -178,15 +179,7 @@ def process_image(image_path: str) -> dict:
     path = Path(image_path)
     if not path.exists():
         return {"file": image_path, "error": f"File not found: {image_path}"}
-    if path.suffix.lower() not in (
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".gif",
-        ".bmp",
-        ".tiff",
-        ".webp",
-    ):
+    if path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"):
         return {"file": image_path, "error": f"Unsupported format: {path.suffix}"}
 
     text = extract_text(image_path)
